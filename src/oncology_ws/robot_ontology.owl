@@ -1,0 +1,44 @@
+<?xml version="1.0"?>
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+         xmlns:xsd="http://www.w3.org/2001/XMLSchema#"
+         xmlns:rdfs="http://www.w3.org/2000/01/rdf-schema#"
+         xmlns:owl="http://www.w3.org/2002/07/owl#"
+         xml:base="http://example.org/robot.owl"
+         xmlns="http://example.org/robot.owl#">
+
+<owl:Ontology rdf:about="http://example.org/robot.owl"/>
+
+<owl:ObjectProperty rdf:about="#located_in">
+  <rdfs:range rdf:resource="#Room"/>
+  <rdfs:domain rdf:resource="#Object"/>
+</owl:ObjectProperty>
+
+<owl:Class rdf:about="#Room">
+  <rdfs:subClassOf rdf:resource="http://www.w3.org/2002/07/owl#Thing"/>
+</owl:Class>
+
+<owl:Class rdf:about="#Object">
+  <rdfs:subClassOf rdf:resource="http://www.w3.org/2002/07/owl#Thing"/>
+</owl:Class>
+
+<owl:NamedIndividual rdf:about="#Kitchen">
+  <rdf:type rdf:resource="#Room"/>
+</owl:NamedIndividual>
+
+<owl:NamedIndividual rdf:about="#WaterBottle">
+  <rdf:type rdf:resource="#Object"/>
+  <located_in rdf:resource="#Kitchen"/>
+</owl:NamedIndividual>
+
+<owl:NamedIndividual rdf:about="#Chair">
+  <rdf:type rdf:resource="#Object"/>
+  <located_in rdf:resource="#Kitchen"/>
+  <located_in rdf:resource="#LivingRoom"/>
+</owl:NamedIndividual>
+
+<owl:NamedIndividual rdf:about="#LivingRoom">
+  <rdf:type rdf:resource="#Room"/>
+</owl:NamedIndividual>
+
+
+</rdf:RDF>
