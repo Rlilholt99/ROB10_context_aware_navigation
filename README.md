@@ -3,7 +3,7 @@
 
 ## Setting up the simulation
 
-This repo uses the simulation provided by PAL Robotics. Follow the instructions found on the simulation repo https://git.hub.com/pal-robotics/tiago_simulation.
+This repo uses the simulation provided by PAL Robotics. Follow the instructions found on the simulation repo https://github.com/pal-robotics/tiago_simulation.
 Not that the installation procedure places the source files in your home directory. These should be moved to the path of this repo using the following command
 
 ```bash
