@@ -17,3 +17,11 @@ From this point simply build the repo
 ```bash
 colcon build --symlink-install
 ```
+
+
+## Launch
+
+``` bash
+source install/setup.bash
+ros2 launch context_aware_nab_bringup startSim.launch.py
+```
