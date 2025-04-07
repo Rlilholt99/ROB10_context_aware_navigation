@@ -23,5 +23,5 @@ colcon build --symlink-install
 
 ``` bash
 source install/setup.bash
-ros2 launch context_aware_nab_bringup startSim.launch.py
+ros2 launch context_aware_nav_bringup startSim.launch.py
 ```
