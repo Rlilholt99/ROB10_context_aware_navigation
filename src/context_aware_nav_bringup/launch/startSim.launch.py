@@ -22,7 +22,8 @@ def generate_launch_description():
 
     spawn_tiago = IncludeLaunchDescription(
         spawn_tiago_path,
-        launch_arguments={'is_public_sim':'True'}.items()
+        launch_arguments={'is_public_sim':'True',
+                          'navigation':'True'}.items()
     )
     return LaunchDescription([
         spawn_tiago
