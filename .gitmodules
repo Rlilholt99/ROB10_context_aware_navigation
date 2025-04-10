@@ -1,6 +1,3 @@
 [submodule "tiago_simulation"]
 	path = tiago_simulation
 	url = git@github.com:pal-robotics/tiago_simulation.git
-[submodule "Mask2Former"]
-	path = Mask2Former
-	url = git@github.com:Wallat-bilal/Mask2Former.git
