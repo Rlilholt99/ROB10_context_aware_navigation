@@ -1,3 +1,0 @@
-[submodule "tiago_simulation"]
-	path = tiago_simulation
-	url = git@github.com:pal-robotics/tiago_simulation.git
