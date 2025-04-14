@@ -2,7 +2,7 @@
 
 import rclpy
 from rclpy.node import Node
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import Image, CameraInfo
 from cv_bridge import CvBridge, CvBridgeError
 import message_filters
 import os
@@ -10,12 +10,15 @@ import warnings
 import numpy as np
 import cv2
 from PIL import Image as PILImage
-from sensor_msgs.msg import CameraInfo
 import torch
 from transformers import AutoImageProcessor, Mask2FormerForUniversalSegmentation
 import threading
 import queue
 import time
+
+# Import custom message and necessary geometry messages
+from context_aware_nav_interfaces.msg import ObjectLocalPose
+from geometry_msgs.msg import Pose, Point, Quaternion
 
 # Optional: disable HF Hub warning
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
@@ -53,13 +56,13 @@ FUSION_CATEGORIES = {
 class StereoSemanticMappingNode(Node):
     def __init__(self):
         super().__init__('stereo_semantic_mapping_node')
-        # Existing initialization...
+        # Topics and processing interval
         self.left_topic = '/head_front_camera/rgb/image_raw'
         self.seg_interval = 4
         self.get_logger().info(f"Subscribing camera: {self.left_topic}")
         self.get_logger().info(f"Segmentation every {self.seg_interval} frames")
 
-        # Subscribe to RGB image
+        # Subscribe to RGB image using message_filters
         self.sub_left = message_filters.Subscriber(self, Image, self.left_topic)
         self.time_sync = message_filters.ApproximateTimeSynchronizer(
             [self.sub_left], queue_size=10, slop=0.2)
@@ -73,7 +76,7 @@ class StereoSemanticMappingNode(Node):
             10)
         self.depth_image = None
 
-        # Subscribe to camera info
+        # Subscribe to camera info to get intrinsics
         self.camera_info_sub = self.create_subscription(
             CameraInfo,
             '/head_front_camera/rgb/camera_info',
@@ -89,6 +92,10 @@ class StereoSemanticMappingNode(Node):
         self.bridge = CvBridge()
         self.frame_count = 0
         self.ann_pub = self.create_publisher(Image, '/segmentation/annotated', 10)
+        # New publisher for object local pose message
+        self.pose_pub = self.create_publisher(ObjectLocalPose, '/object_local_pose', 10)
+
+        # Set up the queue and processing thread
         self.frame_queue = queue.Queue(maxsize=2)
         self.processing_thread = threading.Thread(target=self.process_frames)
         self.processing_thread.daemon = True
@@ -104,6 +111,7 @@ class StereoSemanticMappingNode(Node):
         self.model.to(self.device)
         self.id2label = getattr(self.model.config, "id2label", {})
         self.get_logger().info("Mask2Former loaded.")
+        # Use a lower segmentation resolution to improve speed.
         self.seg_image_size = (640, 360)
         self.detected_objects = []
         self.environment_type = "unknown"
@@ -112,17 +120,16 @@ class StereoSemanticMappingNode(Node):
     def camera_info_callback(self, msg):
         """
         Extract the intrinsic parameters from the camera_info message.
-        The K field is a list of 9 numbers representing the 3x3 matrix:
-            [ fx  0   cx,
-              0   fy  cy,
-              0   0   1 ]
+        The K field is a list of 9 numbers representing the 3x3 intrinsic matrix:
+            [ fx, 0, cx,
+              0, fy, cy,
+              0,  0,  1 ]
         """
         self.fx = msg.k[0]
         self.fy = msg.k[4]
         self.cx = msg.k[2]
         self.cy = msg.k[5]
-        self.get_logger().info(
-            f"Camera intrinsics: fx={self.fx}, fy={self.fy}, cx={self.cx}, cy={self.cy}")
+        self.get_logger().info(f"Camera intrinsics: fx={self.fx}, fy={self.fy}, cx={self.cx}, cy={self.cy}")
 
     def depth_callback(self, msg):
         try:
@@ -169,17 +176,17 @@ class StereoSemanticMappingNode(Node):
         self.detected_objects = fused_objects
 
         ##########################
-        # 2D (Position) Estimation
+        # 2D Position Estimation
         ##########################
-        # Ensure the camera intrinsics have been received
+        # Check if camera intrinsics have been received.
         if self.fx is None or self.fy is None or self.cx is None or self.cy is None:
             self.get_logger().warn("Camera intrinsics not received yet!")
         else:
             for obj in fused_objects:
                 x_min, y_min, x_max, y_max = obj["bbox"]
-                u = (x_min + x_max) / 2.0  # Center of the bounding box (u coordinate)
-                v = (y_min + y_max) / 2.0  # Center of the bounding box (v coordinate)
-                d = obj["distance"]       # Depth value from depth sensor
+                u = (x_min + x_max) / 2.0  # 2D image coordinate u (center)
+                v = (y_min + y_max) / 2.0  # 2D image coordinate v (center)
+                d = obj["distance"]  # Depth value from sensor
                 if d is not None:
                     X = (u - self.cx) * d / self.fx
                     Y = (v - self.cy) * d / self.fy
@@ -193,8 +200,7 @@ class StereoSemanticMappingNode(Node):
 
         if annotated_left is not None:
             cv2.putText(annotated_left, f"Env: {self.environment_type}",
-                        (10, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 2)
+                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 2)
 
         self.get_logger().info(f"[Frame {self.frame_count}] Environment: {self.environment_type}")
         for obj in fused_objects:
@@ -205,6 +211,29 @@ class StereoSemanticMappingNode(Node):
             else:
                 self.get_logger().info(f"Object {obj['label']} Position: Not computed")
 
+        ##########################
+        # Publish Custom ObjectLocalPose Message
+        ##########################
+        local_pose_msg = ObjectLocalPose()
+        local_pose_msg.object_labels = []
+        local_pose_msg.object_pose = []
+
+        for obj in fused_objects:
+            local_pose_msg.object_labels.append(obj["label"])
+            pose = Pose()
+            if obj.get("position") is not None and None not in obj["position"]:
+                X, Y, Z = obj["position"]
+                pose.position = Point(x=X, y=Y, z=Z)
+            else:
+                pose.position = Point(x=0.0, y=0.0, z=0.0)
+            # Here, orientation is not computed, so we set it to the identity quaternion.
+            pose.orientation = Quaternion(x=0.0, y=0.0, z=0.0, w=1.0)
+            local_pose_msg.object_pose.append(pose)
+
+        self.pose_pub.publish(local_pose_msg)
+        self.get_logger().info("Published object local poses.")
+
+        # Resize annotated image for display.
         view_resolution = (1280, 720)
         annotated_view = cv2.resize(annotated_left, view_resolution, interpolation=cv2.INTER_LINEAR)
         return annotated_view
@@ -233,7 +262,7 @@ class StereoSemanticMappingNode(Node):
             elif label_id in self.id2label:
                 label_name = self.id2label[label_id]
             else:
-                continue
+                continue  # Skip if label is unrecognized.
             mask_y, mask_x = np.where(segmentation == seg_id)
             if mask_y.size == 0 or mask_x.size == 0:
                 continue

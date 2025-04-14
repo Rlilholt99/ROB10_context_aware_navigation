@@ -7,6 +7,13 @@
   <maintainer email="rasmuslilholt@hotmail.dk">lilholt</maintainer>
   <license>TODO: License declaration</license>
 
+  <build_depend>geometry_msgs</build_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <build_depend>std_msgs</build_depend>
+  <exec_depend>std_msgs</exec_depend>
+
+
+
   <buildtool_depend>ament_cmake</buildtool_depend>
   <build_depend>rosidl_default_generators</build_depend>
   <exec_depend>rosidl_default_runtime</exec_depend>
