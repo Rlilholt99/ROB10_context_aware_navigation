@@ -113,23 +113,8 @@ class StereoSemanticMappingNode(Node):
         self.id2label = getattr(self.model.config, "id2label", {})
         self.get_logger().info("Mask2Former loaded.")
 
-        # Stereo matcher and calibration parameters
-        self.stereo_matcher = cv2.StereoSGBM_create(
-            minDisparity=0,
-            numDisparities=16 * 4,
-            blockSize=5,
-            P1=8 * 3 * 5 ** 2,
-            P2=32 * 3 * 5 ** 2,
-            disp12MaxDiff=1,
-            uniquenessRatio=10,
-            speckleWindowSize=100,
-            speckleRange=32
-        )
-        self.focal_length = 800.0
-        self.baseline = 0.10
-
         # Use a lower segmentation resolution to improve speed.
-        self.seg_image_size = (1280, 720)
+        self.seg_image_size = (640, 360)
 
         self.detected_objects = []
         self.environment_type = "unknown"
@@ -187,10 +172,20 @@ class StereoSemanticMappingNode(Node):
                     self.get_logger().error(f"CV Bridge error during publish: {str(e)}")
             self.frame_queue.task_done()
 
+
+
+
+
+
+
+
+
+
     def update_semantics(self, left_cv, depth_map):
         """
         Process the image for object detection and segmentation.
         Uses the stored depth image for distance estimates.
+        View image resolution
         """
         objects_left, labels_left, annotated_left = self.detect_objects_from_camera(left_cv, depth_map)
         combined_labels = labels_left
@@ -215,13 +210,15 @@ class StereoSemanticMappingNode(Node):
         else:
             self.get_logger().info("  No objects detected.")
 
+        # Define view resolution for display.
+        view_resolution = (1280, 720)
+        combined_annotated = cv2.resize(combined_annotated, view_resolution, interpolation=cv2.INTER_LINEAR)
+
         return combined_annotated
 
+################
+
     def detect_objects_from_camera(self, cv_image, dummy_depth_map):
-        """
-        Runs object detection and segmentation on the provided image.
-        Annotates bounding boxes and calculates object distance using the stored depth image.
-        """
         # Convert BGR -> RGB, then to PIL image and resize.
         pil_img = PILImage.fromarray(cv2.cvtColor(cv_image, cv2.COLOR_BGR2RGB))
         pil_img = pil_img.resize(self.seg_image_size, PILImage.BILINEAR)
@@ -248,30 +245,35 @@ class StereoSemanticMappingNode(Node):
             seg_id = seg_info["id"]
             label_id = seg_info["label_id"]
 
+            # Check if label_id is in the model's label mapping:
+            # If not, skip this segment (no bounding box drawn).
             if str(label_id) in self.id2label:
                 label_name = self.id2label[str(label_id)]
             elif label_id in self.id2label:
                 label_name = self.id2label[label_id]
             else:
-                label_name = f"Label_{label_id}"
+                # label_id not recognized -> skip it
+                continue
 
+            # Mask coordinates
             mask_y, mask_x = np.where(segmentation == seg_id)
             if mask_y.size == 0 or mask_x.size == 0:
                 continue
+
             y_min, y_max = mask_y.min(), mask_y.max()
             x_min, x_max = mask_x.min(), mask_x.max()
 
             recognized_labels.append(label_name)
 
-            # Use the stored depth image for distance estimates.
+            # Depth estimation
             if self.depth_image is not None:
                 dh, dw = self.depth_image.shape[:2]
                 y_max_clamped = min(y_max, dh - 1)
                 x_max_clamped = min(x_max, dw - 1)
-                depth_region = self.depth_image[y_min:y_max_clamped+1, x_min:x_max_clamped+1]
+                depth_region = self.depth_image[y_min:y_max_clamped + 1, x_min:x_max_clamped + 1]
                 valid_depths = depth_region[depth_region > 0]
                 if valid_depths.size > 0:
-                    median_depth = float(np.median(valid_depths))
+                    median_depth = float(np.min(valid_depths))
                 else:
                     median_depth = None
             else:
@@ -283,16 +285,23 @@ class StereoSemanticMappingNode(Node):
                 "distance": median_depth
             })
 
-            dist_str = f"{median_depth:.2f}m" if median_depth else "?"
+            dist_str = f"{median_depth:.2f}m" if median_depth is not None else "?"
             annotation_txt = f"{label_name} {dist_str}"
-            # Do not draw bounding box for floor or wall, but still include them in detections.
-            if label_name.lower() not in ["floor", "wall"]:
-                cv2.rectangle(annotated_img, (x_min, y_min), (x_max, y_max), (0, 255, 0), 2)
-                cv2.putText(annotated_img, annotation_txt,
-                            (x_min, max(y_min - 10, 0)),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+
+            # Additionally skip drawing bounding boxes for certain known classes (e.g., floor, wall)
+            if label_name.lower() in ["floor", "wall"]:
+                continue
+
+            # Draw the bounding box and label
+            cv2.rectangle(annotated_img, (x_min, y_min), (x_max, y_max), (0, 255, 0), 2)
+            cv2.putText(annotated_img, annotation_txt,
+                        (x_min, max(y_min - 10, 0)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
         return detections, recognized_labels, annotated_img
+
+    ################
+
 
     def fuse_detections(self, detections):
         fused = []
@@ -355,3 +364,4 @@ def main(args=None):
 
 if __name__ == '__main__':
     main()
+
