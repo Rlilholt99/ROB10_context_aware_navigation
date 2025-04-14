@@ -5,7 +5,6 @@ from rclpy.node import Node
 from sensor_msgs.msg import Image
 from cv_bridge import CvBridge, CvBridgeError
 import message_filters
-
 import os
 import warnings
 import numpy as np
@@ -13,7 +12,6 @@ import cv2
 from PIL import Image as PILImage
 import torch
 from transformers import AutoImageProcessor, Mask2FormerForUniversalSegmentation
-
 import threading
 import queue
 import time
@@ -26,26 +24,27 @@ warnings.filterwarnings("ignore")
 # Environment classification and bounding-box fusion dictionaries
 ################################################################################
 ENV_KEYWORDS = {
-    "kitchen":  ["sink", "refrigerator", "cabinet", "oven", "microwave", "glass", "wine glass", "plate", "knife", "fork"],
-    "office":   ["desk", "computer", "office chair", "keyboard", "monitor", "Screen", "CRT Screen"],
+    "kitchen": ["sink", "refrigerator", "cabinet", "oven", "microwave", "glass", "wine glass", "plate", "knife",
+                "fork"],
+    "office": ["desk", "computer", "office chair", "keyboard", "monitor", "Screen", "CRT Screen"],
     "corridor": ["wall", "door", "hallway", "corridor"],
-    "lab":      ["pole", "barrel", "truck", "conveyer belt", "washer", "sink", "counter", "desk",
-                 "countertop", "stove", "box", "barrel", "basket", "pole", "column", "runway",
-                 "escalator", "light", "traffic light", "monitor", "screen", "CRT screen", "wooden pallet",
-                 "wooden pallet stack", "wooden Box", "Box", "fire extinguisher"],
-    "bedroom":  ["bed", "pillow", "wardrobe", "lamp"],
+    "lab": ["pole", "barrel", "truck", "conveyer belt", "washer", "sink", "counter", "desk",
+            "countertop", "stove", "box", "barrel", "basket", "pole", "column", "runway",
+            "escalator", "light", "traffic light", "monitor", "screen", "CRT screen", "wooden pallet",
+            "wooden pallet stack", "wooden Box", "Box", "fire extinguisher"],
+    "bedroom": ["bed", "pillow", "wardrobe", "lamp"],
     "living room": ["sofa", "television", "table", "carpet", "lamp", "ball"]
 }
 
 FUSION_CATEGORIES = {
-    "kitchen":  ["sink", "refrigerator", "cabinet", "oven", "microwave", "kitchen island"],
-    "office":   ["desk", "computer", "office chair", "keyboard", "monitor", "Screen", "CRT Screen"],
+    "kitchen": ["sink", "refrigerator", "cabinet", "oven", "microwave", "kitchen island"],
+    "office": ["desk", "computer", "office chair", "keyboard", "monitor", "Screen", "CRT Screen"],
     "corridor": ["wall", "door", "hallway", "corridor"],
-    "lab":      ["pole", "barrel", "truck", "conveyer belt", "washer", "sink", "counter", "desk",
-                 "countertop", "stove", "box", "barrel", "basket", "pole", "column", "runway",
-                 "escalator", "light", "traffic light", "monitor", "screen", "CRT screen", "wooden pallet",
-                 "wooden pallet stack", "wooden Box", "Box", "fire extinguisher"],
-    "bedroom":  ["bed", "pillow", "wardrobe", "lamp"],
+    "lab": ["pole", "barrel", "truck", "conveyer belt", "washer", "sink", "counter", "desk",
+            "countertop", "stove", "box", "barrel", "basket", "pole", "column", "runway",
+            "escalator", "light", "traffic light", "monitor", "screen", "CRT screen", "wooden pallet",
+            "wooden pallet stack", "wooden Box", "Box", "fire extinguisher"],
+    "bedroom": ["bed", "pillow", "wardrobe", "lamp"],
     "living room": ["sofa", "television", "table", "carpet", "lamp", "ball"]
 }
 
@@ -53,10 +52,11 @@ FUSION_CATEGORIES = {
 class StereoSemanticMappingNode(Node):
     """
     A ROS 2 Node that:
-      - Subscribes to a single RGB topic (/head_front_camera/rgb/image_raw).
-      - Uses a background thread to perform heavy segmentation inference.
-      - Subscribes to /head_front_camera/depth/image_raw for depth info.
-      - Publishes annotated images to /segmentation/annotated.
+      - Subscribes to an RGB topic (/head_front_camera/rgb/image_raw).
+      - Performs segmentation (using Mask2Former) on incoming frames.
+      - Uses the depth image (/head_front_camera/depth/image_raw) to compute object distances.
+      - Computes the 3D position (x, y, z) for each detection using camera intrinsics.
+      - Publishes annotated images.
     """
 
     def __init__(self):
@@ -64,7 +64,7 @@ class StereoSemanticMappingNode(Node):
 
         # Topics and processing interval.
         self.left_topic = '/head_front_camera/rgb/image_raw'
-        self.seg_interval = 4
+        self.seg_interval = 4  # Adjust as needed
 
         self.get_logger().info(f"Subscribing camera: {self.left_topic}")
         self.get_logger().info(f"Segmentation every {self.seg_interval} frames")
@@ -97,7 +97,7 @@ class StereoSemanticMappingNode(Node):
         self.processing_thread.daemon = True
         self.processing_thread.start()
 
-        # Set device to GPU if available, otherwise CPU.
+        # Set device to GPU if available.
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.get_logger().info(f"Using device: {self.device}")
 
@@ -122,9 +122,7 @@ class StereoSemanticMappingNode(Node):
         self.get_logger().info("Stereo Semantic Mapping Node ready (asynchronous segmentation).")
 
     def depth_callback(self, msg):
-        """
-        Store the latest depth image for distance measurements.
-        """
+        """Store the latest depth image for distance measurements."""
         try:
             self.depth_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='passthrough')
         except CvBridgeError as e:
@@ -132,30 +130,22 @@ class StereoSemanticMappingNode(Node):
             self.depth_image = None
 
     def image_callback(self, left_msg):
-        """
-        Callback for the RGB image.
-        Instead of processing here, put the frame in a queue.
-        """
+        """Receive an RGB frame and add it to the processing queue."""
         self.frame_count += 1
         if self.frame_count % self.seg_interval != 0:
             return
-
         try:
             frame = self.bridge.imgmsg_to_cv2(left_msg, 'bgr8')
         except CvBridgeError as e:
             self.get_logger().error(f"CV Bridge error: {str(e)}")
             return
-
-        # If the queue is full, drop the frame.
         if not self.frame_queue.full():
             self.frame_queue.put(frame)
         else:
             self.get_logger().warn("Frame queue is full, dropping frame.")
 
     def process_frames(self):
-        """
-        Worker thread that processes frames from the queue.
-        """
+        """Worker thread that processes frames from the queue."""
         while rclpy.ok():
             try:
                 frame = self.frame_queue.get(timeout=1.0)
@@ -172,21 +162,7 @@ class StereoSemanticMappingNode(Node):
                     self.get_logger().error(f"CV Bridge error during publish: {str(e)}")
             self.frame_queue.task_done()
 
-
-
-
-
-
-
-
-
-
     def update_semantics(self, left_cv, depth_map):
-        """
-        Process the image for object detection and segmentation.
-        Uses the stored depth image for distance estimates.
-        View image resolution
-        """
         objects_left, labels_left, annotated_left = self.detect_objects_from_camera(left_cv, depth_map)
         combined_labels = labels_left
         self.environment_type = self.classify_environment(combined_labels)
@@ -195,36 +171,55 @@ class StereoSemanticMappingNode(Node):
         fused_objects = self.fuse_detections(all_objects)
         self.detected_objects = fused_objects
 
-        combined_annotated = annotated_left
+        ##########################
+        # 2D Position Estimation
+        ##########################
+        # Define camera intrinsics (replace with your actual calibration data)
+        fx = 800.0  # focal length in pixels
+        fy = 800.0  # focal length in pixels
+        cx = 640.0  # principal point x (half of 1280)
+        cy = 360.0  # principal point y (half of 720)
 
-        if combined_annotated is not None:
-            cv2.putText(combined_annotated, f"Env: {self.environment_type}",
+        # For each fused detection, compute the 3D position using the depth
+        for obj in fused_objects:
+            x_min, y_min, x_max, y_max = obj["bbox"]
+            u = (x_min + x_max) / 2.0  # 2D image u coordinate (center)
+            v = (y_min + y_max) / 2.0  # 2D image v coordinate (center)
+            d = obj["distance"]  # distance from depth sensor
+            if d is not None:
+                # Compute X, Y, and Z in the camera coordinate frame.
+                X = (u - cx) * d / fx
+                Y = (v - cy) * d / fy
+                Z = d
+            else:
+                X, Y, Z = None, None, None
+            obj["position"] = (X, Y, Z)
+        ##########################
+        # End Position Estimation
+        ##########################
+
+        if annotated_left is not None:
+            cv2.putText(annotated_left, f"Env: {self.environment_type}",
                         (10, 30),
                         cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 2)
 
         self.get_logger().info(f"[Frame {self.frame_count}] Environment: {self.environment_type}")
-        if fused_objects:
-            for obj in fused_objects:
-                dist_str = f"{obj['distance']:.2f}m" if obj.get("distance") else "N/A"
-                self.get_logger().info(f"  Object: {obj['label']}, distance: {dist_str}, bbox: {obj['bbox']}")
-        else:
-            self.get_logger().info("  No objects detected.")
+        for obj in fused_objects:
+            self.get_logger().info(
+                f"Object {obj['label']} Position: {obj.get('position', 'Not computed')}, Distance: {obj['distance']:.2f}m" if
+                obj["distance"] is not None else f"Object {obj['label']} Position: Not computed")
 
-        # Define view resolution for display.
+        # Resize for display.
         view_resolution = (1280, 720)
-        combined_annotated = cv2.resize(combined_annotated, view_resolution, interpolation=cv2.INTER_LINEAR)
-
-        return combined_annotated
-
-################
+        annotated_view = cv2.resize(annotated_left, view_resolution, interpolation=cv2.INTER_LINEAR)
+        return annotated_view
 
     def detect_objects_from_camera(self, cv_image, dummy_depth_map):
-        # Convert BGR -> RGB, then to PIL image and resize.
+        # Convert BGR to RGB and resize.
         pil_img = PILImage.fromarray(cv2.cvtColor(cv_image, cv2.COLOR_BGR2RGB))
         pil_img = pil_img.resize(self.seg_image_size, PILImage.BILINEAR)
 
         inputs = self.processor(images=pil_img, return_tensors="pt")
-        # Move inputs to the appropriate device.
         inputs = {k: v.to(self.device) for k, v in inputs.items()}
         with torch.no_grad():
             outputs = self.model(**inputs)
@@ -245,17 +240,13 @@ class StereoSemanticMappingNode(Node):
             seg_id = seg_info["id"]
             label_id = seg_info["label_id"]
 
-            # Check if label_id is in the model's label mapping:
-            # If not, skip this segment (no bounding box drawn).
             if str(label_id) in self.id2label:
                 label_name = self.id2label[str(label_id)]
             elif label_id in self.id2label:
                 label_name = self.id2label[label_id]
             else:
-                # label_id not recognized -> skip it
-                continue
+                continue  # Skip if label is unrecognized.
 
-            # Mask coordinates
             mask_y, mask_x = np.where(segmentation == seg_id)
             if mask_y.size == 0 or mask_x.size == 0:
                 continue
@@ -265,7 +256,6 @@ class StereoSemanticMappingNode(Node):
 
             recognized_labels.append(label_name)
 
-            # Depth estimation
             if self.depth_image is not None:
                 dh, dw = self.depth_image.shape[:2]
                 y_max_clamped = min(y_max, dh - 1)
@@ -288,20 +278,15 @@ class StereoSemanticMappingNode(Node):
             dist_str = f"{median_depth:.2f}m" if median_depth is not None else "?"
             annotation_txt = f"{label_name} {dist_str}"
 
-            # Additionally skip drawing bounding boxes for certain known classes (e.g., floor, wall)
             if label_name.lower() in ["floor", "wall"]:
                 continue
 
-            # Draw the bounding box and label
             cv2.rectangle(annotated_img, (x_min, y_min), (x_max, y_max), (0, 255, 0), 2)
             cv2.putText(annotated_img, annotation_txt,
                         (x_min, max(y_min - 10, 0)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
         return detections, recognized_labels, annotated_img
-
-    ################
-
 
     def fuse_detections(self, detections):
         fused = []
@@ -364,4 +349,3 @@ def main(args=None):
 
 if __name__ == '__main__':
     main()
-
