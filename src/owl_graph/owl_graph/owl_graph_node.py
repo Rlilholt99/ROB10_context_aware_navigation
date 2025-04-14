@@ -15,17 +15,27 @@ class owl_graph_node(Node):
         owl_path = self.get_owl_graph_path()
         self.owl_graph = owl.get_ontology(owl_path).load()
 
+        print(self.owl_graph.Object.instances())
+
 
     def owl_graph_lookup(self, entity_name : str, relation='located_in'):
-        name = entity_name.lower()
+        words = [word.strip().lower() for word in entity_name.split(',')]
+        inferred_locations = set()
 
-        for ind in self.owl_graph.Object.instances():
-            if ind.name.lower() == name:
-                print(f"Found individual: {ind.name}")
-                for rel in ind.get_relations():
-                    if rel.name == relation:
-                        print(f"Relation: {rel.name}")
-                        return rel
+        for word in words:
+            for obj in self.owl_graph.Object.instances():
+                if obj.name.lower() == word:
+                    print(f"Matched object: {obj.name}")
+                    # Check the specified relation (e.g., 'located_in')
+                    for location in obj.located_in:
+                        inferred_locations.add(location.name)
+
+        if inferred_locations:
+            print(f"Inferred locations: {inferred_locations}")
+            return ', '.join(inferred_locations)
+        else:
+            print("No locations inferred.")
+            return "No locations inferred."
 
 
 
@@ -48,7 +58,11 @@ class owl_graph_node(Node):
 def main(args=None):
     rclpy.init(args=args)
     node = owl_graph_node()
-    rclpy.spin(node)
+    try:
+
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        node.get_logger().info('Keyboard interrupt, shutting down...')
     node.destroy_node()
     rclpy.shutdown()
         
