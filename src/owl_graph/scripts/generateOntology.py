@@ -12,6 +12,14 @@ with onto:
     class located_in(Object >> Room):
         pass
 
+    class KitchenObject(Object):
+        pass
+    class LivingRoomObject(Object):
+        pass
+    class BedroomObject(Object):
+        pass
+    
+
 # Add sample data
 kitchen = Room("Kitchen")
 bottle = Object("WaterBottle")
