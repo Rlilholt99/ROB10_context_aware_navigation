@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 import os
+
 os.environ['RCUTILS_CONSOLE_OUTPUT_FORMAT'] = '{message}'
-os.environ['TRANSFORMERS_VERBOSITY'] = 'error'   # Optionally set environment variable
+os.environ['TRANSFORMERS_VERBOSITY'] = 'error'  # Optionally set environment variable
 
 from transformers import logging as hf_logging
+
 hf_logging.set_verbosity_error()  # This will suppress INFO messages from transformers
 
 import rclpy
@@ -21,8 +23,6 @@ import threading
 import queue
 import time
 from collections import deque
-
-
 
 # Import custom message and necessary geometry messages
 from context_aware_nav_interfaces.msg import ObjectLocalPose
@@ -67,8 +67,6 @@ class StereoSemanticMappingNode(Node):
         # Topics and processing interval
         self.left_topic = '/head_front_camera/rgb/image_raw'
         self.seg_interval = 4
-        #self.get_logger().info(f"Subscribing camera: {self.left_topic}")
-        #self.get_logger().info(f"Segmentation every {self.seg_interval} frames")
 
         # Subscribe to RGB image using message_filters
         self.sub_left = message_filters.Subscriber(self, Image, self.left_topic)
@@ -102,16 +100,8 @@ class StereoSemanticMappingNode(Node):
         self.ann_pub = self.create_publisher(Image, '/segmentation/annotated', 10)
         # Publisher for custom ObjectLocalPose message
         self.pose_pub = self.create_publisher(ObjectLocalPose, '/object_local_pose', 10)
-        
 
-        # Set up the queue and processing thread
-#        self.frame_queue = queue.Queue(maxsize=2)
-#        self.processing_thread = threading.Thread(target=self.process_frames)
-#        self.processing_thread.daemon = True
-#        self.processing_thread.start()
-
-
-
+        # This part looks in if you have Cuda setup it will use it if not CPU for you model segmantion
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.get_logger().info(f"Using device: {self.device}")
 
@@ -121,6 +111,8 @@ class StereoSemanticMappingNode(Node):
         self.model = Mask2FormerForUniversalSegmentation.from_pretrained(
             "facebook/mask2former-swin-large-ade-panoptic")
         self.model.to(self.device)
+
+
         # Set label_ids_to_fuse to an empty list or your desired configuration
         self.model.config.label_ids_to_fuse = []
         self.id2label = getattr(self.model.config, "id2label", {})
@@ -130,62 +122,46 @@ class StereoSemanticMappingNode(Node):
         self.seg_image_size = (640, 480)
         self.detected_objects = []
         self.environment_type = "unknown"
-        #self.get_logger().info("Stereo Semantic Mapping Node ready (asynchronous segmentation).")
 
-        # *** Temporal Smoothing Setup ***
-        self.smoothing_window_size = 4
-        self.detections_history = deque(maxlen=self.smoothing_window_size)
+
+        #Store Last Published Poses:
+        self.last_published_poses = {}  # Dictionary: key = object label, value = (X, Y, Z)
+        self.publish_threshold = 0.05  # Threshold (in meters) to decide if a change is significant
+
+
         # ****************************************
-
         # *** Confidence Threshold Setup ***
         self.confidence_threshold = 0.5
         # ****************************************
 
+
+    #This callback receives the camera info (intrinsics) and sets the internal variables self.fx, self.fy, self.cx, and self.cy.
+    # These are essential for converting 2D pixel coordinates and depth to 3D positions
     def camera_info_callback(self, msg):
         self.fx = msg.k[0]
         self.fy = msg.k[4]
         self.cx = msg.k[2]
         self.cy = msg.k[5]
-        #self.get_logger().info(f"Camera intrinsics: fx={self.fx}, fy={self.fy}, cx={self.cx}, cy={self.cy}")
 
+    ############################################################################################
+    #       depth callback
+    ############################################################################################
+    #This callback converts incoming depth image messages to a CV2 image using CvBridge and stores it in self.depth_image. If conversion fails, an error is logged.
     def depth_callback(self, msg):
         try:
             self.depth_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='passthrough')
         except CvBridgeError as e:
             self.get_logger().error(f"Depth callback bridge error: {e}")
             self.depth_image = None
-########################################################################################
-#        def image_callback(self, left_msg):
-#            self.frame_count += 1
-#            if self.frame_count % self.seg_interval != 0:
-#                return
-#            try:
-#                frame = self.bridge.imgmsg_to_cv2(left_msg, 'bgr8')
-#            except CvBridgeError as e:
-#                self.get_logger().error(f"CV Bridge error: {str(e)}")
-#                return
-#            if not self.frame_queue.full():
-#                self.frame_queue.put(frame)
-#            else:
-#                self.get_logger().warn("Frame queue is full, dropping frame.")
 
-#    def image_callback(self, left_msg):
-#        try:
-#            frame = self.bridge.imgmsg_to_cv2(left_msg, 'bgr8')
-#        except CvBridgeError as e:
-#            self.get_logger().error(f"CV Bridge error: {str(e)}")
-#            return
-
-        # Clear any stale frames from the buffer before adding the new one.
-#        while not self.frame_queue.empty():
-#            try:
-#                self.frame_queue.get_nowait()
-#            except queue.Empty:
-#                break
-
-        # Put the new frame into the queue.
-#        self.frame_queue.put(frame)
-
+    ############################################################################################
+    #       end depth callback
+    ############################################################################################
+    ############################################################################################
+    #       image callback
+    ############################################################################################
+    #This callback is triggered by synchronized RGB images.
+    # It converts the ROS image to an OpenCV (cv2) format, then immediately calls update_semantics(frame, None) to process the image:
     def image_callback(self, left_msg):
         try:
             frame = self.bridge.imgmsg_to_cv2(left_msg, 'bgr8')
@@ -202,31 +178,22 @@ class StereoSemanticMappingNode(Node):
             except CvBridgeError as e:
                 self.get_logger().error(f"CV Bridge error during publish: {str(e)}")
 
-    ##############################################################################
-    def process_frames(self):
-        while rclpy.ok():
-            try:
-                frame = self.frame_queue.get(timeout=1.0)
-            except queue.Empty:
-                continue
-            annotated_img = self.update_semantics(frame, None)
-            if annotated_img is not None:
-                try:
-                    out_msg = self.bridge.cv2_to_imgmsg(annotated_img, encoding="bgr8")
-                    self.ann_pub.publish(out_msg)
-                    #self.get_logger().info("Published annotated image.")
-                except CvBridgeError as e:
-                    self.get_logger().error(f"CV Bridge error during publish: {str(e)}")
-            self.frame_queue.task_done()
+    ############################################################################################
+    #       end image callback
+    ############################################################################################
 
+    ############################################################################################
+    #       Update semantics
+    ############################################################################################
     def update_semantics(self, left_cv, depth_map):
+        # Run segmentation and obtain detections, labels, and annotated image.
         objects_left, labels_left, annotated_left = self.detect_objects_from_camera(left_cv, depth_map)
         combined_labels = labels_left
         self.environment_type = self.classify_environment(combined_labels)
         fused_objects = self.fuse_detections(objects_left)
         self.detected_objects = fused_objects
 
-        # 2D Position Estimation
+        # 2D Position Estimation: Compute object's pose using bounding box center and depth.
         if self.fx is None or self.fy is None or self.cx is None or self.cy is None:
             self.get_logger().warn("Camera intrinsics not received yet!")
         else:
@@ -246,7 +213,8 @@ class StereoSemanticMappingNode(Node):
         if annotated_left is not None:
             cv2.putText(annotated_left, f"Env: {self.environment_type}",
                         (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 2)
-        # Report environment and per-object details.
+
+        # Optional logging of environment and object details.
         self.get_logger().info(f"Environment: {self.environment_type}")
         for obj in fused_objects:
             pos = obj.get("position", "Not computed")
@@ -255,51 +223,52 @@ class StereoSemanticMappingNode(Node):
             else:
                 self.get_logger().info(f"Object {obj['label']} Position: Not computed")
 
-        # Temporal Smoothing Section
-        self.detections_history.append(fused_objects)
-        smoothed_positions = {}
-        counts = {}
-        for detections in self.detections_history:
-            for obj in detections:
-                label = obj["label"]
-                pos = obj.get("position")
-                if pos is not None and None not in pos:
-                    if label in smoothed_positions:
-                        smoothed_positions[label] = np.add(smoothed_positions[label], np.array(pos))
-                        counts[label] += 1
-                    else:
-                        smoothed_positions[label] = np.array(pos)
-                        counts[label] = 1
-        for obj in fused_objects:
-            label = obj["label"]
-            if label in smoothed_positions and counts[label] > 0:
-                avg_pos = smoothed_positions[label] / counts[label]
-                obj["position"] = tuple(avg_pos.tolist())
-        # End Temporal Smoothing Section
-
-        # Publish Custom ObjectLocalPose Message
+        # Build and conditionally publish the ObjectLocalPose Message.
         local_pose_msg = ObjectLocalPose()
         local_pose_msg.object_labels = []
         local_pose_msg.object_pose = []
+        publish_update = False
+
         for obj in fused_objects:
-            local_pose_msg.object_labels.append(obj["label"])
-            pose = Pose()
+            label = obj["label"]
+
+            # Determine current object's pose.
             if obj.get("position") is not None and None not in obj["position"]:
-                X, Y, Z = obj["position"]
-                pose.position = Point(x=X, y=Y, z=Z)
+                current_pose = obj["position"]  # (X, Y, Z)
+                if label in self.last_published_poses:
+                    prev_pose = np.array(self.last_published_poses[label])
+                    curr_pose = np.array(current_pose)
+                    if np.linalg.norm(curr_pose - prev_pose) > self.publish_threshold:
+                        publish_update = True
+                        self.last_published_poses[label] = current_pose
+                else:
+                    publish_update = True
+                    self.last_published_poses[label] = current_pose
             else:
-                pose.position = Point(x=0.0, y=0.0, z=0.0)
+                current_pose = (0.0, 0.0, 0.0)
+
+            # Append object's data to the message.
+            local_pose_msg.object_labels.append(label)
+            pose = Pose()
+            # Create a Point message using keyword arguments to avoid extra arguments.
+            pose.position = Point(x=current_pose[0], y=current_pose[1], z=current_pose[2])
             pose.orientation = Quaternion(x=0.0, y=0.0, z=0.0, w=1.0)
             local_pose_msg.object_pose.append(pose)
-        self.pose_pub.publish(local_pose_msg)
-        #self.get_logger().info("Published object local poses.")
-        # End Custom Message Publish
+
+        # Only publish the new message if there was a significant change.
+        if publish_update:
+            self.pose_pub.publish(local_pose_msg)
 
         view_resolution = (1280, 720)
         annotated_view = cv2.resize(annotated_left, view_resolution, interpolation=cv2.INTER_LINEAR)
         return annotated_view
 
-#####################################################################################################
+    ############################################################################################
+    #      End Update semantics
+    ############################################################################################
+    ############################################################################################
+    #       Detect object from camera
+    ############################################################################################
     def detect_objects_from_camera(self, cv_image, dummy_depth_map):
         # Convert the OpenCV image to a PIL image and resize it to the segmentation resolution.
         pil_img = PILImage.fromarray(cv2.cvtColor(cv_image, cv2.COLOR_BGR2RGB))
@@ -399,14 +368,9 @@ class StereoSemanticMappingNode(Node):
             })
         return detections, recognized_labels, annotated_img
 
-    #####################################################################################################
-
-
-
-
-
-
-
+    ############################################################################################
+    #      End Detect object from camera
+    ############################################################################################
 
     def fuse_detections(self, detections):
         fused = []
@@ -466,3 +430,9 @@ def main(args=None):
 
 if __name__ == '__main__':
     main()
+
+    # TODO:
+    # make sure that when you do Temporal Smoothing Setup for classfiation only and not moving average over fram.
+    #
+    #
+
