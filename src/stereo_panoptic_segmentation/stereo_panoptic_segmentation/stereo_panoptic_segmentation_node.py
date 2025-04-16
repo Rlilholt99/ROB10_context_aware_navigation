@@ -10,6 +10,7 @@ hf_logging.set_verbosity_error()  # This will suppress INFO messages from transf
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSProfile
 from sensor_msgs.msg import Image, CameraInfo
 from cv_bridge import CvBridge, CvBridgeError
 import message_filters
@@ -97,9 +98,11 @@ class StereoSemanticMappingNode(Node):
         # Other initialization (bridge, model loading, etc.)
         self.bridge = CvBridge()
         self.frame_count = 0
-        self.ann_pub = self.create_publisher(Image, '/segmentation/annotated', 10)
+        # To only buffer the most recent message (and thus publish every new image), set the QoS depth to 1:
+        self.ann_pub = self.create_publisher(Image, '/segmentation/annotated', QoSProfile(depth=1))
         # Publisher for custom ObjectLocalPose message
-        self.pose_pub = self.create_publisher(ObjectLocalPose, '/object_local_pose', 10)
+        self.pose_pub = self.create_publisher(ObjectLocalPose, '/object_local_pose', QoSProfile(depth=1))
+
 
         # This part looks in if you have Cuda setup it will use it if not CPU for you model segmantion
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -193,7 +196,7 @@ class StereoSemanticMappingNode(Node):
         fused_objects = self.fuse_detections(objects_left)
         self.detected_objects = fused_objects
 
-        # 2D Position Estimation: Compute object's pose using bounding box center and depth.
+        # 2D Position Estimation: Compute object's 3D position from bounding box and depth.
         if self.fx is None or self.fy is None or self.cx is None or self.cy is None:
             self.get_logger().warn("Camera intrinsics not received yet!")
         else:
@@ -210,11 +213,12 @@ class StereoSemanticMappingNode(Node):
                     X, Y, Z = None, None, None
                 obj["position"] = (X, Y, Z)
 
+        # Annotate image with environment information.
         if annotated_left is not None:
             cv2.putText(annotated_left, f"Env: {self.environment_type}",
                         (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 2)
 
-        # Optional logging of environment and object details.
+        # Log the environment and each object's computed position.
         self.get_logger().info(f"Environment: {self.environment_type}")
         for obj in fused_objects:
             pos = obj.get("position", "Not computed")
@@ -223,45 +227,33 @@ class StereoSemanticMappingNode(Node):
             else:
                 self.get_logger().info(f"Object {obj['label']} Position: Not computed")
 
-        # Build and conditionally publish the ObjectLocalPose Message.
+        # Build the ObjectLocalPose message.
         local_pose_msg = ObjectLocalPose()
         local_pose_msg.object_labels = []
         local_pose_msg.object_pose = []
-        publish_update = False
 
+        # For each detection, fill in the label and pose.
         for obj in fused_objects:
             label = obj["label"]
-
-            # Determine current object's pose.
             if obj.get("position") is not None and None not in obj["position"]:
-                current_pose = obj["position"]  # (X, Y, Z)
-                if label in self.last_published_poses:
-                    prev_pose = np.array(self.last_published_poses[label])
-                    curr_pose = np.array(current_pose)
-                    if np.linalg.norm(curr_pose - prev_pose) > self.publish_threshold:
-                        publish_update = True
-                        self.last_published_poses[label] = current_pose
-                else:
-                    publish_update = True
-                    self.last_published_poses[label] = current_pose
+                current_pose = obj["position"]
             else:
                 current_pose = (0.0, 0.0, 0.0)
-
-            # Append object's data to the message.
             local_pose_msg.object_labels.append(label)
             pose = Pose()
-            # Create a Point message using keyword arguments to avoid extra arguments.
+            # Use keyword arguments to create the Point message.
             pose.position = Point(x=current_pose[0], y=current_pose[1], z=current_pose[2])
             pose.orientation = Quaternion(x=0.0, y=0.0, z=0.0, w=1.0)
             local_pose_msg.object_pose.append(pose)
 
-        # Only publish the new message if there was a significant change.
-        if publish_update:
-            self.pose_pub.publish(local_pose_msg)
+        # Publish the new message every time update_semantics is executed.
+        self.pose_pub.publish(local_pose_msg)
 
+        # Resize the annotated image for viewing.
         view_resolution = (1280, 720)
         annotated_view = cv2.resize(annotated_left, view_resolution, interpolation=cv2.INTER_LINEAR)
         return annotated_view
+
 
     ############################################################################################
     #      End Update semantics
@@ -371,7 +363,11 @@ class StereoSemanticMappingNode(Node):
     ############################################################################################
     #      End Detect object from camera
     ############################################################################################
-
+    ############################################################################################
+    #      duse detection
+    ############################################################################################
+    #f several detections belong to a fusion category, this part of the code creates one bounding box that covers all those detections and averages their distance values.
+    # This helps to avoid redundant or overlapping detections for the same object type.
     def fuse_detections(self, detections):
         fused = []
         groups = {}
@@ -402,7 +398,9 @@ class StereoSemanticMappingNode(Node):
                     "distance": avg_dist
                 })
         return fused + others
-
+    ############################################################################################
+    #      End fuse detections
+    ############################################################################################
     def classify_environment(self, labels_found):
         env_counts = {env: 0 for env in ENV_KEYWORDS}
         for label in labels_found:
@@ -433,6 +431,7 @@ if __name__ == '__main__':
 
     # TODO:
     # make sure that when you do Temporal Smoothing Setup for classfiation only and not moving average over fram.
-    #
-    #
-
+    # update every time their is a new image then queue max 1.
+    # every time this happing segmentation publish
+    # what i want now is to make sure that every time i do labing if i have 2 the same type of label they have different id.
+    # smantic mapping 
