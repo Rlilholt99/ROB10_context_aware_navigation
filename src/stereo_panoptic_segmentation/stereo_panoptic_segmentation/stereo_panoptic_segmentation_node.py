@@ -102,12 +102,16 @@ class StereoSemanticMappingNode(Node):
         self.ann_pub = self.create_publisher(Image, '/segmentation/annotated', 10)
         # Publisher for custom ObjectLocalPose message
         self.pose_pub = self.create_publisher(ObjectLocalPose, '/object_local_pose', 10)
+        
 
         # Set up the queue and processing thread
-        self.frame_queue = queue.Queue(maxsize=2)
-        self.processing_thread = threading.Thread(target=self.process_frames)
-        self.processing_thread.daemon = True
-        self.processing_thread.start()
+#        self.frame_queue = queue.Queue(maxsize=2)
+#        self.processing_thread = threading.Thread(target=self.process_frames)
+#        self.processing_thread.daemon = True
+#        self.processing_thread.start()
+
+
+
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.get_logger().info(f"Using device: {self.device}")
 
@@ -150,21 +154,55 @@ class StereoSemanticMappingNode(Node):
         except CvBridgeError as e:
             self.get_logger().error(f"Depth callback bridge error: {e}")
             self.depth_image = None
+########################################################################################
+#        def image_callback(self, left_msg):
+#            self.frame_count += 1
+#            if self.frame_count % self.seg_interval != 0:
+#                return
+#            try:
+#                frame = self.bridge.imgmsg_to_cv2(left_msg, 'bgr8')
+#            except CvBridgeError as e:
+#                self.get_logger().error(f"CV Bridge error: {str(e)}")
+#                return
+#            if not self.frame_queue.full():
+#                self.frame_queue.put(frame)
+#            else:
+#                self.get_logger().warn("Frame queue is full, dropping frame.")
+
+#    def image_callback(self, left_msg):
+#        try:
+#            frame = self.bridge.imgmsg_to_cv2(left_msg, 'bgr8')
+#        except CvBridgeError as e:
+#            self.get_logger().error(f"CV Bridge error: {str(e)}")
+#            return
+
+        # Clear any stale frames from the buffer before adding the new one.
+#        while not self.frame_queue.empty():
+#            try:
+#                self.frame_queue.get_nowait()
+#            except queue.Empty:
+#                break
+
+        # Put the new frame into the queue.
+#        self.frame_queue.put(frame)
 
     def image_callback(self, left_msg):
-        self.frame_count += 1
-        if self.frame_count % self.seg_interval != 0:
-            return
         try:
             frame = self.bridge.imgmsg_to_cv2(left_msg, 'bgr8')
         except CvBridgeError as e:
             self.get_logger().error(f"CV Bridge error: {str(e)}")
             return
-        if not self.frame_queue.full():
-            self.frame_queue.put(frame)
-        else:
-            self.get_logger().warn("Frame queue is full, dropping frame.")
 
+        # Directly process the frame.
+        annotated_img = self.update_semantics(frame, None)
+        if annotated_img is not None:
+            try:
+                out_msg = self.bridge.cv2_to_imgmsg(annotated_img, encoding="bgr8")
+                self.ann_pub.publish(out_msg)
+            except CvBridgeError as e:
+                self.get_logger().error(f"CV Bridge error during publish: {str(e)}")
+
+    ##############################################################################
     def process_frames(self):
         while rclpy.ok():
             try:
