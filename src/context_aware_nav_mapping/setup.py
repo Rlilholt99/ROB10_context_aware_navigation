@@ -20,6 +20,7 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
+            'semantic_mapping = context_aware_nav_mapping.semantic_mapping_node:main'
         ],
     },
 )
