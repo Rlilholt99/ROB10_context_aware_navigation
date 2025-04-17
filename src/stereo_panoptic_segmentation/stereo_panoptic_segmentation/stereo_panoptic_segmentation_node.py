@@ -17,13 +17,15 @@ import message_filters
 import warnings
 import numpy as np
 import cv2
-from PIL import Image as PILImage
 import torch
 from transformers import AutoImageProcessor, Mask2FormerForUniversalSegmentation
 import threading
 import queue
 import time
 from collections import deque
+
+
+
 
 # Import custom message and necessary geometry messages
 from context_aware_nav_interfaces.msg import ObjectLocalPose
@@ -67,12 +69,12 @@ class StereoSemanticMappingNode(Node):
         super().__init__('stereo_semantic_mapping_node')
         # Topics and processing interval
         self.left_topic = '/head_front_camera/rgb/image_raw'
-        self.seg_interval = 4
+        self.seg_interval = 1   #“segmentation interval” you only run the heavy Mask2Former segmentation once every N frames instead of on every single one.
 
         # Subscribe to RGB image using message_filters
         self.sub_left = message_filters.Subscriber(self, Image, self.left_topic)
         self.time_sync = message_filters.ApproximateTimeSynchronizer(
-            [self.sub_left], queue_size=10, slop=0.2)
+            [self.sub_left], queue_size=10, slop=0.2) # hold up to 10 messages per input stream and (seconds) is the maximum allowed difference between timestamps
         self.time_sync.registerCallback(self.image_callback)
 
         # Subscribe to depth image
@@ -104,11 +106,13 @@ class StereoSemanticMappingNode(Node):
         self.pose_pub = self.create_publisher(ObjectLocalPose, '/object_local_pose', QoSProfile(depth=1))
 
 
-        # This part looks in if you have Cuda setup it will use it if not CPU for you model segmantion
+        # This part looks in if you have Cuda setup it will use it if not CPU for your model segmantion
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        #log to show what your using when you start up the code.
         self.get_logger().info(f"Using device: {self.device}")
-
         self.get_logger().info("Loading Mask2Former model... (may be slow)")
+
+        # here we setup the model that used for segmantion proccess
         self.processor = AutoImageProcessor.from_pretrained(
             "facebook/mask2former-swin-large-ade-panoptic", use_fast=False)
         self.model = Mask2FormerForUniversalSegmentation.from_pretrained(
@@ -123,6 +127,8 @@ class StereoSemanticMappingNode(Node):
 
         # Use a lower segmentation resolution to improve speed.
         self.seg_image_size = (640, 480)
+
+        # Initializes an empty list where you’ll later store the current frame’s fused detections.
         self.detected_objects = []
         self.environment_type = "unknown"
 
@@ -192,9 +198,13 @@ class StereoSemanticMappingNode(Node):
         # Run segmentation and obtain detections, labels, and annotated image.
         objects_left, labels_left, annotated_left = self.detect_objects_from_camera(left_cv, depth_map)
         combined_labels = labels_left
+        # classify environment
         self.environment_type = self.classify_environment(combined_labels)
+        # fuse detections
         fused_objects = self.fuse_detections(objects_left)
         self.detected_objects = fused_objects
+
+
 
         # 2D Position Estimation: Compute object's 3D position from bounding box and depth.
         if self.fx is None or self.fy is None or self.cx is None or self.cy is None:
@@ -262,24 +272,27 @@ class StereoSemanticMappingNode(Node):
     #       Detect object from camera
     ############################################################################################
     def detect_objects_from_camera(self, cv_image, dummy_depth_map):
-        # Convert the OpenCV image to a PIL image and resize it to the segmentation resolution.
-        pil_img = PILImage.fromarray(cv2.cvtColor(cv_image, cv2.COLOR_BGR2RGB))
-        pil_img = pil_img.resize(self.seg_image_size, PILImage.BILINEAR)
+        # Convert BGR to RGB and resize to segmentation resolution using OpenCV
+        rgb_img = cv2.cvtColor(cv_image, cv2.COLOR_BGR2RGB)
+        seg_w, seg_h = self.seg_image_size
+        resized_img = cv2.resize(rgb_img, (seg_w, seg_h), interpolation=cv2.INTER_LINEAR)
 
-        # Run the image through Mask2Former.
-        inputs = self.processor(images=pil_img, return_tensors="pt")
+        # Run the image through Mask2Former via the processor (accepts NumPy RGB arrays)
+        inputs = self.processor(images=resized_img, return_tensors="pt")
         inputs = {k: v.to(self.device) for k, v in inputs.items()}
         with torch.no_grad():
             outputs = self.model(**inputs)
+
+        # Post-process at the segmentation resolution
         panoptic_res = self.processor.post_process_panoptic_segmentation(
-            outputs, target_sizes=[pil_img.size[::-1]]
+            outputs,
+            target_sizes=[resized_img.shape[:2]]  # (height, width)
         )[0]
         segmentation = panoptic_res["segmentation"].cpu().numpy().astype(np.int32)
         segments_info = panoptic_res["segments_info"]
 
-        # Convert back to an OpenCV image for annotation.
-        annotated_img = np.array(pil_img, dtype=np.uint8)
-        annotated_img = cv2.cvtColor(annotated_img, cv2.COLOR_RGB2BGR)
+        # Prepare annotated image (convert back to BGR)
+        annotated_img = cv2.cvtColor(resized_img, cv2.COLOR_RGB2BGR)
 
         detections = []
         recognized_labels = []
@@ -288,7 +301,7 @@ class StereoSemanticMappingNode(Node):
             seg_id = seg_info["id"]
             label_id = seg_info["label_id"]
 
-            # Determine the label name using the model's id2label mapping.
+            # Lookup label name
             if str(label_id) in self.id2label:
                 label_name = self.id2label[str(label_id)]
             elif label_id in self.id2label:
@@ -296,69 +309,63 @@ class StereoSemanticMappingNode(Node):
             else:
                 continue
 
-            # Use confidence score filtering.
+            # Confidence filtering
             confidence = seg_info.get("score", 1.0)
             if confidence < self.confidence_threshold:
                 continue
-            label_name_with_conf = f"{label_name} ({confidence * 100:.1f}%)"
+            label_conf = f"{label_name} ({confidence*100:.1f}%)"
 
-            # Retrieve the segmentation mask indices at the segmentation resolution.
-            mask_indices = np.where(segmentation == seg_id)
-            if mask_indices[0].size == 0 or mask_indices[1].size == 0:
+
+
+
+            # Extract bounding box
+            mask_y, mask_x = np.where(segmentation == seg_id)
+            if mask_y.size == 0:
                 continue
-            y_min, y_max = mask_indices[0].min(), mask_indices[0].max()
-            x_min, x_max = mask_indices[1].min(), mask_indices[1].max()
+            y_min, y_max = mask_y.min(), mask_y.max()
+            x_min, x_max = mask_x.min(), mask_x.max()
+            recognized_labels.append(label_conf)
 
-            # Add the label (with confidence) to the recognized list.
-            recognized_labels.append(label_name_with_conf)
-            ########################
-            #    start Depth
-            ########################
-            # Depth extraction using the segmentation mask.
+            # Depth extraction
             if self.depth_image is not None:
                 depth_h, depth_w = self.depth_image.shape[:2]
-                # Create a binary mask at the segmentation resolution.
                 seg_mask = (segmentation == seg_id).astype(np.uint8)
-                # Resize the segmentation mask to the depth image resolution (640x480) using nearest neighbor.
-                mask_resized = cv2.resize(seg_mask, (depth_w, depth_h), interpolation=cv2.INTER_NEAREST)
-                mask_resized = mask_resized.astype(bool)
-
-                # Extract depth values from the depth image using the resized mask.
+                mask_resized = cv2.resize(seg_mask, (depth_w, depth_h), interpolation=cv2.INTER_NEAREST).astype(bool)
                 valid_depths = self.depth_image[mask_resized]
                 valid_depths = valid_depths[(valid_depths > 0) & np.isfinite(valid_depths)]
                 if valid_depths.size > 0:
                     median_depth = float(np.median(valid_depths))
-                    if (not np.isfinite(median_depth)) or (median_depth < 0.3) or (median_depth > 8.0):
+                    if not np.isfinite(median_depth) or median_depth < 0.3 or median_depth > 8.0:
                         median_depth = None
                 else:
                     median_depth = None
             else:
                 median_depth = None
-            ########################
-            #   end Depth
-            #########################
-            # Build annotation strings.
-            dist_str = f"{median_depth:.2f}m" if median_depth is not None else "out of range"
-            annotation_txt = f"{label_name_with_conf} {dist_str}"
 
-            # Ignore certain classes (e.g., floor, wall, etc.).
-            if label_name.lower() in ["floor", "wall", "ceiling", "background", "void", "sidewalk",
-                                      "hallway", "earth", "building", "sky"]:
+            # Annotation text
+            dist_str = f"{median_depth:.2f}m" if median_depth is not None else "out of range"
+            annotation_txt = f"{label_conf} {dist_str}"
+
+            # Skip unwanted classes
+            skip = ["floor","wall","ceiling","background","void","sidewalk","hallway",
+                    "earth","building","sky","windowpane"]
+            if label_name.lower() in skip:
                 continue
 
-            # Draw the bounding box and annotation for visualization.
-            cv2.rectangle(annotated_img, (x_min, y_min), (x_max, y_max), (0, 255, 0), 2)
+            # Draw on annotated image
+            cv2.rectangle(annotated_img, (x_min, y_min), (x_max, y_max), (0,255,0), 2)
             cv2.putText(annotated_img, annotation_txt,
-                        (x_min, max(y_min - 10, 0)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                        (x_min, max(y_min-10,0)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,255,0), 2)
 
-            # Append the detection information.
             detections.append({
                 "label": label_name,
                 "bbox": (x_min, y_min, x_max, y_max),
                 "distance": median_depth
             })
+
         return detections, recognized_labels, annotated_img
+
 
     ############################################################################################
     #      End Detect object from camera
@@ -428,10 +435,3 @@ def main(args=None):
 
 if __name__ == '__main__':
     main()
-
-    # TODO:
-    # make sure that when you do Temporal Smoothing Setup for classfiation only and not moving average over fram.
-    # update every time their is a new image then queue max 1.
-    # every time this happing segmentation publish
-    # what i want now is to make sure that every time i do labing if i have 2 the same type of label they have different id.
-    # smantic mapping 
