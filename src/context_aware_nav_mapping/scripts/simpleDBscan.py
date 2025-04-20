@@ -1,7 +1,7 @@
 import numpy as np
 
-def dbscan(poses, eps=0.5, min_samples=1):
-    poses= np.array(poses)
+def dbscan(poses, object_labels, eps=0.5, min_samples=1):
+    poses = np.array(poses)
     N = poses.shape[0]
     labels = np.full(N, -1, dtype=int)  # -1 = noise
     visited = np.zeros(N, dtype=bool)
@@ -33,13 +33,16 @@ def dbscan(poses, eps=0.5, min_samples=1):
                     labels[current] = cluster_id
             cluster_id += 1
 
-    # Group points into clusters
+    # Group points and object labels into clusters
     clusters = []
+    cluster_labels = []
     for cluster_label in range(cluster_id):
         cluster = poses[labels == cluster_label].tolist()
+        cluster_objects = [object_labels[i] for i in range(N) if labels[i] == cluster_label]
         clusters.append(cluster)
+        cluster_labels.append(cluster_objects)
 
-    return clusters
+    return clusters, cluster_labels
 
 if __name__ == "__main__":
 
@@ -53,8 +56,11 @@ if __name__ == "__main__":
         [50.0, 50.0],  # Outlier
     ])
 
-    clusters = dbscan(poses, eps=0.5, min_samples=2)
+    object_labels = ["bottle", "cola", "table", "ball", "wrench", "outlier"]
+
+    clusters, cluster_labels = dbscan(poses, object_labels, eps=0.5, min_samples=2)
 
     # Print results
-    for i, cluster in enumerate(clusters):
+    for i, (cluster, labels) in enumerate(zip(clusters, cluster_labels)):
         print(f"Cluster {i}: {cluster}")
+        print(f"Object Labels: {labels}")

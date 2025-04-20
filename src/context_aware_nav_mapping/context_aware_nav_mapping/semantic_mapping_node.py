@@ -11,6 +11,7 @@ from builtin_interfaces.msg import Duration
 from std_srvs.srv import Empty
 from scripts.simpleDBscan import dbscan
 from ament_index_python import get_package_share_directory
+from context_aware_nav_interfaces.srv import OwlLookup
 
 
 
@@ -35,6 +36,7 @@ class SemanticMapping(Node):
         self.create_subscription(PoseWithCovarianceStamped,"/amcl_pose",self.amclPoseCallback,10)
         self.create_subscription(TwistStamped,"/mobile_base_controller/cmd_vel_out",self.cmd_vel_callback,10)
         self.create_service(Empty,"/compute_location",self.compute_location_area_callback)
+        self.owl_lookup_client = self.create_client(OwlLookup,"/owl_graph")
         self.marker_pub = self.create_publisher(Marker,"/object_pose",10)
         self.marker_array_pub = self.create_publisher(MarkerArray,"/multiple_object_poses",10)
         self.locations_array_pub = self.create_publisher(MarkerArray,"/location_areas",10)
@@ -111,9 +113,12 @@ class SemanticMapping(Node):
     
     def compute_location_area_callback(self,request,response):
         #step 1 Cluster the poses
-        clusters = self.cluster_object_poses()
+        
+        clusters, cluster_labels = self.cluster_object_poses()
+        self.lookup_ontology(cluster_labels)
         #step 2 Compute the area of each cluster
         self.publish_bounding_box(clusters)
+
         return response
 
     def cluster_object_poses(self):
@@ -123,7 +128,7 @@ class SemanticMapping(Node):
             poses.append([pose.position.x,pose.position.y])
             self.get_logger().info(f'pose: {pose.position.x} {pose.position.y}')
 
-        clusters = dbscan(poses,eps=2,min_samples=1)
+        clusters = dbscan(poses,self.object_labels,eps=2,min_samples=1)
         return clusters
 
         
@@ -189,6 +194,7 @@ class SemanticMapping(Node):
     def publish_bounding_box(self,clusters):
         if not self.object_poses:
             return
+
 
         locations = MarkerArray()
         for i, cluster in enumerate(clusters):
@@ -276,7 +282,16 @@ class SemanticMapping(Node):
         self.marker_array_pub.publish(markerArray)
         pass
 
-    def lookupOntology(self, object_list):
+    def lookup_ontology(self, object_list):
+        request = OwlLookup.Request()
+        request.object_list = object_list
+        future = self.owl_lookup_client.call_async(request)
+        rclpy.spin_until_future_complete(self, future)
+        if future.result() is not None:
+            return future.result().output
+        else:
+            self.get_logger().error('Ontology lookup failed')
+
         pass
 
 
