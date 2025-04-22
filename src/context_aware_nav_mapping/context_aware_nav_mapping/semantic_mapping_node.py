@@ -12,6 +12,8 @@ from std_srvs.srv import Empty
 from scripts.simpleDBscan import dbscan
 from ament_index_python import get_package_share_directory
 from context_aware_nav_interfaces.srv import OwlLookup
+from rclpy.executors import MultiThreadedExecutor
+from rclpy.callback_groups import ReentrantCallbackGroup
 
 
 
@@ -25,6 +27,8 @@ class SemanticMapping(Node):
         self.test = ObjectLocalPose()
         self.is_robot_moving = False
 
+        self.callback_group = ReentrantCallbackGroup()
+
         self.object_poses = []
         self.object_labels = []
 
@@ -36,7 +40,7 @@ class SemanticMapping(Node):
         self.create_subscription(PoseWithCovarianceStamped,"/amcl_pose",self.amclPoseCallback,10)
         self.create_subscription(TwistStamped,"/mobile_base_controller/cmd_vel_out",self.cmd_vel_callback,10)
         self.create_service(Empty,"/compute_location",self.compute_location_area_callback)
-        self.owl_lookup_client = self.create_client(OwlLookup,"/owl_graph")
+        self.owl_lookup_client = self.create_client(OwlLookup,"/owl_graph",callback_group=self.callback_group)
         self.marker_pub = self.create_publisher(Marker,"/object_pose",10)
         self.marker_array_pub = self.create_publisher(MarkerArray,"/multiple_object_poses",10)
         self.locations_array_pub = self.create_publisher(MarkerArray,"/location_areas",10)
@@ -74,7 +78,6 @@ class SemanticMapping(Node):
             return
 
         new_poses = []
-        print(len(msg.object_pose))
         for obj in msg.object_pose:
             new_poses.append(self.transformObjectPose(obj,tf))
 
@@ -115,9 +118,12 @@ class SemanticMapping(Node):
         #step 1 Cluster the poses
         
         clusters, cluster_labels = self.cluster_object_poses()
-        self.lookup_ontology(cluster_labels)
+        # location_labels = []
+        location_labels = self.lookup_ontology(cluster_labels[0])
+        # for cluster_label in cluster_labels:
+        #     location_labels.append(self.lookup_ontology(cluster_label))
         #step 2 Compute the area of each cluster
-        self.publish_bounding_box(clusters)
+        self.publish_bounding_box(clusters,location_labels)
 
         return response
 
@@ -134,17 +140,6 @@ class SemanticMapping(Node):
         
 
 
-    def compute_nav_location(self,location):
-        # compute a navigation goal based on the rectangle which defines the area/location
-        # The question is where to put the navigation goal
-        # The first idea is to put it on the closest point of the rectangle
-        # The second idea is to put it in the center of the rectangle
-        # The third idea is to compute a random position witihin the rectangle
-        # The first idea might place us inside a wall.
-        # the second idea might place us inside an object
-        # The third idea might place us inside an object
-        # Maybe the correct step is to compute a position where as many of the objects are visible.
-        pass
 
     def save_semantic_map(self):
         json = self.format_locations()
@@ -191,7 +186,7 @@ class SemanticMapping(Node):
         center_y = (min_y + max_y) / 2.0
         return width,height, center_x, center_y
 
-    def publish_bounding_box(self,clusters):
+    def publish_bounding_box(self,clusters,location_label):
         if not self.object_poses:
             return
 
@@ -220,18 +215,24 @@ class SemanticMapping(Node):
             marker.scale.y = height
             marker.scale.z = 0.05  # Flat on the ground
 
-            if i % 2 == 0:
-                marker.color.r = 0.0
-                marker.color.g = 1.0
-                marker.color.b = 0.0
-            elif i == 1:
-                marker.color.r = 1.0
-                marker.color.g = 1.0
-                marker.color.b = 0.0
-            else: 
-                marker.color.r = 0.0
-                marker.color.g = 0.0
-                marker.color.b = 1.0
+            match location_label[i].lower(): 
+
+                case "kitchen":
+                    marker.color.r = 0.0
+                    marker.color.g = 1.0
+                    marker.color.b = 0.0
+                case "living_room":
+                    marker.color.r = 1.0
+                    marker.color.g = 1.0
+                    marker.color.b = 0.0
+                case "bedroom":
+                    marker.color.r = 0.0
+                    marker.color.g = 0.0
+                    marker.color.b = 1.0
+                case "unknown":
+                    marker.color.r = 1.0
+                    marker.color.g = 0.0
+                    marker.color.b = 1.0
             marker.color.a = 0.2  # 20% opacity
             locations.markers.append(marker)
 
@@ -283,11 +284,25 @@ class SemanticMapping(Node):
         pass
 
     def lookup_ontology(self, object_list):
+
+        # Remember to unpack the object list
+        # I probably need to change some stuff in the owl_graph
+        # so it can handle a list so i can send a list of lists
+        if not self.owl_lookup_client.wait_for_service(timeout_sec=5.0):
+            self.get_logger().error('Owl lookup service not available.')
+            return None
         request = OwlLookup.Request()
-        request.object_list = object_list
+        for obj in object_list:
+            request.input.append(obj)
+
+        
         future = self.owl_lookup_client.call_async(request)
+        self.get_logger().info('before spin')
         rclpy.spin_until_future_complete(self, future)
+        self.get_logger().info('after spin')
         if future.result() is not None:
+            self.get_logger().info(f'{future.result().output}')
+            self.get_logger().info('Done with lookup')
             return future.result().output
         else:
             self.get_logger().error('Ontology lookup failed')
@@ -298,9 +313,12 @@ class SemanticMapping(Node):
 
 def main(args=None):
     rclpy.init(args=args)
+    
     node = SemanticMapping()
+    executor = MultiThreadedExecutor()
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
+        executor.spin()
     except KeyboardInterrupt:
         print("stuff")
         node.destroy_node()

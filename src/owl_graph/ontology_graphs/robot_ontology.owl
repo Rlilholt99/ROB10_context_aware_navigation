@@ -21,6 +21,18 @@
   <rdfs:subClassOf rdf:resource="http://www.w3.org/2002/07/owl#Thing"/>
 </owl:Class>
 
+<owl:Class rdf:about="#KitchenObject">
+  <rdfs:subClassOf rdf:resource="#Object"/>
+</owl:Class>
+
+<owl:Class rdf:about="#LivingRoomObject">
+  <rdfs:subClassOf rdf:resource="#Object"/>
+</owl:Class>
+
+<owl:Class rdf:about="#BedroomObject">
+  <rdfs:subClassOf rdf:resource="#Object"/>
+</owl:Class>
+
 <owl:NamedIndividual rdf:about="#Kitchen">
   <rdf:type rdf:resource="#Room"/>
 </owl:NamedIndividual>
@@ -38,6 +50,16 @@
 
 <owl:NamedIndividual rdf:about="#LivingRoom">
   <rdf:type rdf:resource="#Room"/>
+</owl:NamedIndividual>
+
+<owl:NamedIndividual rdf:about="#Sofa">
+  <rdf:type rdf:resource="#Object"/>
+  <located_in rdf:resource="#LivingRoom"/>
+</owl:NamedIndividual>
+
+<owl:NamedIndividual rdf:about="#Table">
+  <rdf:type rdf:resource="#Object"/>
+  <located_in rdf:resource="#LivingRoom"/>
 </owl:NamedIndividual>
 
 
