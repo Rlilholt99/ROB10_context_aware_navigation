@@ -30,6 +30,12 @@ living_room = Room("LivingRoom")
 chair.located_in.append(living_room)
 chair.located_in.append(kitchen)
 
+sofa = Object("Sofa")
+sofa.located_in.append(living_room)
+
+table = Object("Table")
+table.located_in.append(living_room)
+
 # Save the ontology
 onto.save(file="robot_ontology.owl", format="rdfxml")
 print("Ontology saved!")
