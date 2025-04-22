@@ -14,6 +14,7 @@ from ament_index_python import get_package_share_directory
 from context_aware_nav_interfaces.srv import OwlLookup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.callback_groups import ReentrantCallbackGroup
+import json
 
 
 
@@ -118,12 +119,17 @@ class SemanticMapping(Node):
         #step 1 Cluster the poses
         
         clusters, cluster_labels = self.cluster_object_poses()
-        # location_labels = []
-        location_labels = self.lookup_ontology(cluster_labels[0])
-        # for cluster_label in cluster_labels:
-        #     location_labels.append(self.lookup_ontology(cluster_label))
+        location_labels = []
+        self.get_logger().info(f'clusters: {clusters}')
+        self.get_logger().info(f'cluster_labels: {cluster_labels}')
+        for cluster_label in cluster_labels:
+            self.get_logger().info(f'cluster label: {cluster_label}')
+            location_labels.append(self.lookup_ontology(cluster_label))
+            self.get_logger().info("done")
         #step 2 Compute the area of each cluster
-        self.publish_bounding_box(clusters,location_labels)
+        self.get_logger().info(f'locations: {location_labels}')
+        locations = self.publish_bounding_box(clusters,location_labels)
+        self.save_semantic_map(locations)
 
         return response
 
@@ -141,24 +147,26 @@ class SemanticMapping(Node):
 
 
 
-    def save_semantic_map(self):
-        json = self.format_locations()
+    def save_semantic_map(self,locations):
+        data = self.format_locations(locations)
+        filename = "location.json"
         with open(filename, 'w') as f:
-            json.dump(json, f)
+            json.dump(data, f)
+            self.get_logger().info('done')
 
+        f.close()
+        self.get_logger().info('Semantic map saved to {}'.format(filename))
 
-        # Store the semantic map in a file or database
-        # You can use a format like YAML, JSON, or a database like SQLite
-        pass
     def format_locations(self, locations):
         # Format the locations for storage
         formatted_locations = []
         for loc in locations:
             formatted_locations.append({
-                'x': loc.position.x,
-                'y': loc.position.y,
-                'center_x': loc.center_x,
-                'center_y': loc.center_y,
+                'x': loc[0],
+                'y': loc[1],
+                'center_x': loc[2],
+                'center_y': loc[3],
+                'label': loc[4]
             })
         return formatted_locations
 
@@ -170,6 +178,7 @@ class SemanticMapping(Node):
         return (dx**2 + dy**2 + dz**2)**0.5
 
     def compute_location_area(self,cluster):
+        self.get_logger().info("cluster: {}".format(cluster))
 
         xs = [p[0] for p in cluster]
         ys = [p[1] for p in cluster]
@@ -187,15 +196,17 @@ class SemanticMapping(Node):
         return width,height, center_x, center_y
 
     def publish_bounding_box(self,clusters,location_label):
-        if not self.object_poses:
-            return
-
-
+        self.get_logger().info(f'clusters: {clusters}')
+        self.get_logger().info(f'location: {location_label}')
+        locations_save = []
         locations = MarkerArray()
         for i, cluster in enumerate(clusters):
+            self.get_logger().info("test2")
             width,height,center_x,center_y =self.compute_location_area(cluster)
 
-
+            self.get_logger().info("test3")
+            temp_location = [width,height,center_x,center_y,location_label[i]]
+            locations_save.append(temp_location)
             marker = Marker()
             marker.header.frame_id = 'map'
             marker.header.stamp = self.get_clock().now().to_msg()
@@ -214,8 +225,10 @@ class SemanticMapping(Node):
             marker.scale.x = width
             marker.scale.y = height
             marker.scale.z = 0.05  # Flat on the ground
+            self.get_logger().info("test")
+            
 
-            match location_label[i].lower(): 
+            match location_label[i][0].lower(): 
 
                 case "kitchen":
                     marker.color.r = 0.0
@@ -237,6 +250,7 @@ class SemanticMapping(Node):
             locations.markers.append(marker)
 
         self.locations_array_pub.publish(locations)
+        return locations_save
 
 
 
@@ -297,12 +311,8 @@ class SemanticMapping(Node):
 
         
         future = self.owl_lookup_client.call_async(request)
-        self.get_logger().info('before spin')
         rclpy.spin_until_future_complete(self, future)
-        self.get_logger().info('after spin')
         if future.result() is not None:
-            self.get_logger().info(f'{future.result().output}')
-            self.get_logger().info('Done with lookup')
             return future.result().output
         else:
             self.get_logger().error('Ontology lookup failed')
