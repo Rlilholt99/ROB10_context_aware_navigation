@@ -15,6 +15,7 @@ rosidl_generate_interfaces(
   ${PROJECT_NAME}
   "msg/ObjectLocalPose.msg"
   "srv/OwlLookup.srv"
+  "srv/LocationLookup.srv"
   DEPENDENCIES geometry_msgs std_msgs
 )
 # uncomment the following section in order to fill in

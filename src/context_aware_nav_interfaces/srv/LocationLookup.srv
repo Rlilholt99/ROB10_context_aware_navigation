@@ -1,0 +1,4 @@
+string input
+---
+geometry_msgs/Pose output
+bool location_found

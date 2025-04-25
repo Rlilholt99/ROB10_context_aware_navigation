@@ -6,7 +6,7 @@ def generate_launch_description():
     nlp_node = Node(
         package='nlp_command_processor',
         executable='nlp_node',
-        name='nlp_node'
+        name='nlp_command_node'
     )
 
     return LaunchDescription([
