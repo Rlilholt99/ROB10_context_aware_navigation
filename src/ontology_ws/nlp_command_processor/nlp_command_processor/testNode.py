@@ -49,7 +49,6 @@ class NLPCommandProcessor(Node):
         # Process command
         parsed_command = self.parse_command(command_text)
 
-        self.get_logger().info(f"Published parsed command: {parsed_command}")
 
     def parse_command(self, text):
         doc = self.nlp(text)
@@ -59,7 +58,6 @@ class NLPCommandProcessor(Node):
         
 
         for token in doc:
-            self.get_logger().info(f'Token: {token.pos_}')
             if token.pos_ in ["NOUN", "PROPN"]:
                 locationTokes.append(token.text)
             if token.pos_ == "VERB":

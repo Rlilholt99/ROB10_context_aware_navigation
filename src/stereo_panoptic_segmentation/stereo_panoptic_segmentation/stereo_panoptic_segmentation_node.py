@@ -229,13 +229,14 @@ class StereoSemanticMappingNode(Node):
                         (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 2)
 
         # Log the environment and each object's computed position.
-        self.get_logger().info(f"Environment: {self.environment_type}")
         for obj in fused_objects:
             pos = obj.get("position", "Not computed")
             if obj["distance"] is not None:
-                self.get_logger().info(f"Object {obj['label']} Position: {pos}, Distance: {obj['distance']:.2f}m")
+                pass
+                # self.get_logger().info(f"Object {obj['label']} Position: {pos}, Distance: {obj['distance']:.2f}m")
             else:
-                self.get_logger().info(f"Object {obj['label']} Position: Not computed")
+                pass
+                # self.get_logger().info(f"Object {obj['label']} Position: Not computed")
 
         # Build the ObjectLocalPose message.
         local_pose_msg = ObjectLocalPose()

@@ -72,7 +72,6 @@ class SemanticMapping(Node):
                 timeout=rclpy.duration.Duration(seconds=0.1)
             )
         except TransformException as e:
-            self.get_logger().info('Transform error: {}'.format(e))
             return
 
         if len(msg.object_pose) == 0:
@@ -90,7 +89,8 @@ class SemanticMapping(Node):
 
 
     def amclPoseCallback(self,msg):
-        self.get_logger().info('testing amcl')
+        pass
+        # self.get_logger().info('testing amcl')
 
     def transformObjectPose(self, object_pose, tf):
         # Transform the object pose using the provided transform
