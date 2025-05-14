@@ -10,10 +10,12 @@ from rclpy.qos import QoSProfile, QoSDurabilityPolicy, QoSHistoryPolicy, QoSReli
 from builtin_interfaces.msg import Duration
 from std_srvs.srv import Empty
 from scripts.simpleDBscan import dbscan
+from scripts.mapDBscan import dbscan_map_aware
 from ament_index_python import get_package_share_directory
 from context_aware_nav_interfaces.srv import OwlLookup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.callback_groups import ReentrantCallbackGroup
+from nav_msgs.srv import GetMap
 import json
 
 
@@ -47,8 +49,25 @@ class SemanticMapping(Node):
         self.locations_array_pub = self.create_publisher(MarkerArray,"/location_areas",10)
         self.location_pub = self.create_publisher(Marker,"/location_area",10)
         self.last_time = self.get_clock().now()
-        self.create_timer(5.0, self.log_is_robot_moving)
+        self.get_map_client = self.create_client(GetMap, '/map_server/map', callback_group=self.callback_group)
+        self.map = None
 
+        # Wait for the map to be available
+        while not self.get_map_client.wait_for_service(timeout_sec=5.0):
+            self.get_logger().info('GetMap service not available, waiting again...')
+        request = GetMap.Request()
+        self.get_map_client.call_async(request).add_done_callback(self.map_callback)
+
+        
+
+
+    def map_callback(self, future):
+        response = future.result()
+        if response is not None:
+            self.map = response.map
+            self.get_logger().info('Map received successfully.')
+        else:
+            self.get_logger().error('Failed to receive map.')
 
     def cmd_vel_callback(self,msg):
         if msg.twist.linear.x != 0.0 or msg.twist.angular.z != 0.0:
@@ -141,6 +160,8 @@ class SemanticMapping(Node):
             self.get_logger().info(f'pose: {pose.position.x} {pose.position.y}')
 
         clusters = dbscan(poses,self.object_labels,eps=2,min_samples=1)
+        # clusters = dbscan_map_aware(poses,self.object_labels, map=self.map,eps=2,min_samples=1)
+
         return clusters
 
         
@@ -176,7 +197,7 @@ class SemanticMapping(Node):
         dy = object_pose1.position.y - object_pose2.position.y
         dz = object_pose1.position.z - object_pose2.position.z
         return (dx**2 + dy**2 + dz**2)**0.5
-
+        
     def compute_location_area(self,cluster):
         self.get_logger().info("cluster: {}".format(cluster))
 

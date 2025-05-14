@@ -1,6 +1,7 @@
 import numpy as np
+from nav_msgs.msg import OccupancyGrid
 
-def dbscan(poses, object_labels, eps=0.5, min_samples=1):
+def dbscan(poses, object_labels, eps=0.5, min_samples=1, map : OccupancyGrid = None):
     poses = np.array(poses)
     N = poses.shape[0]
     labels = np.full(N, -1, dtype=int)  # -1 = noise
