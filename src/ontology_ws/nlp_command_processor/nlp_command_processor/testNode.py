@@ -31,7 +31,7 @@ class NLPCommandProcessor(Node):
         self.debug=True
 
         self.subscription = self.create_subscription(
-            String, 'object_nav', self.command_callback, 10)
+            String, 'object_nav', self.command2_callback, 10)
 
         self.navigate_to_pose_client = ActionClient(self,NavigateToPose, 'navigate_to_pose', callback_group=self.callback_group_client)
 
@@ -60,9 +60,22 @@ class NLPCommandProcessor(Node):
     def nav_done_callback(self,future):
         self.get_logger().info("nav is done")
 
+    def command2_callback(self, msg):
+        command_text = msg.data.lower()
+        approach = self.navigate_to_object(command_text)
+
+        if approach is None:
+            self.get_logger().info("Object not found")
+            return
+        goalPose = PoseStamped()
+        goalPose.header.frame_id = 'map'
+        goalPose.header.stamp = self.get_clock().now().to_msg()
+        goalPose.pose = approach
+        self.navigate_to_pose(goalPose)
+
+        # Process command
     def command_callback(self, msg):
         command_text = msg.data.lower()
-        self.get_logger().info(f"Received command: {command_text}")
 
         # Process command
         parsed_command = self.parse_command(command_text)
@@ -130,7 +143,7 @@ class NLPCommandProcessor(Node):
         goal = Pose()
         for i, object in enumerate(self.last_object_detection.object_labels):
             if object == object_name:
-                goal = self.last_object_detection.object_pose[i].pose
+                goal = self.last_object_detection.object_pose[i]
 
 
                 now = rclpy.time.Time()
@@ -180,6 +193,8 @@ class NLPCommandProcessor(Node):
                 
 
                 return approach_pose
+            else:
+                return None
     
     def compute_object_navigation_goal(self,robot_pose_input , obj_pose):
         """
@@ -187,8 +202,8 @@ class NLPCommandProcessor(Node):
         """
         # Assume robot at origin of map frame orientation 0
         # Vector from robot to object
-        dx = obj_pose.pose.position.x - robot_pose_input.position.x
-        dy = obj_pose.pose.position.y - robot_pose_input.position.y
+        dx = obj_pose.position.x - robot_pose_input.position.x
+        dy = obj_pose.position.y - robot_pose_input.position.y
         dist = math.sqrt(dx*dx + dy*dy)
         if dist <= self.approach_distance:
             # Already within range
@@ -200,15 +215,15 @@ class NLPCommandProcessor(Node):
         approach_y = robot_pose_input.position.y + dy * scale
 
         approach = Pose()
-        approach.pose.position.x = approach_x
-        approach.pose.position.y = approach_y
-        approach.pose.position.z = obj_pose.pose.position.z
+        approach.position.x = approach_x
+        approach.position.y = approach_y
+        approach.position.z = obj_pose.position.z
         # Face the object
         yaw = math.atan2(dy, dx)
         qz = math.sin(yaw/2.0)
         qw = math.cos(yaw/2.0)
-        approach.pose.orientation.z = qz
-        approach.pose.orientation.w = qw
+        approach.orientation.z = qz
+        approach.orientation.w = qw
         return approach
 
     def handle_location_response(self, future):
