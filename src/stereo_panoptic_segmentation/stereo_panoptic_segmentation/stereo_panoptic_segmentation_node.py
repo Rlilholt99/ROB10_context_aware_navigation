@@ -199,10 +199,12 @@ class StereoSemanticMappingNode(Node):
         objects_left, labels_left, annotated_left = self.detect_objects_from_camera(left_cv, depth_map)
         combined_labels = labels_left
         # classify environment
-        self.environment_type = self.classify_environment(combined_labels)
+        # self.environment_type = self.classify_environment(combined_labels)
         # fuse detections
-        fused_objects = self.fuse_detections(objects_left)
-        self.detected_objects = fused_objects
+        # fused_objects = self.fuse_detections(objects_left)
+        fused_objects = objects_left
+        self.detected_objects = objects_left
+
 
 
 

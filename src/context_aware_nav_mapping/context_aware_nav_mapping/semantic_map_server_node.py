@@ -27,7 +27,7 @@ class SemanticMapServerNode(Node):
 
         self.map = None
         self.load_map(self.filename)
-        self.publish_visualization()
+        self.create_timer(5.0, self.publish_visualization)
 
         
         
@@ -108,7 +108,7 @@ class SemanticMapServerNode(Node):
                     marker.color.r = 0.0
                     marker.color.g = 1.0
                     marker.color.b = 0.0
-                case "living_room":
+                case "office":
                     marker.color.r = 1.0
                     marker.color.g = 1.0
                     marker.color.b = 0.0

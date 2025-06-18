@@ -1,9 +1,9 @@
 from launch import LaunchDescription
 from launch_ros.actions import Node
-from launch.actions import IncludeLaunchDescription
 import os
 
 
+from launch.actions import IncludeLaunchDescription
 from ament_index_python.packages import get_package_share_directory
 
 
@@ -52,7 +52,7 @@ def generate_launch_description():
 
 
     return LaunchDescription([
-        sim,
+        # sim,
         semantic_mapping,
         detection,
         owl

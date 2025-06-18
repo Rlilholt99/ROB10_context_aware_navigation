@@ -3,13 +3,13 @@ from rclpy.node import Node
 from std_msgs.msg import String
 from nav2_simple_commander.robot_navigator import BasicNavigator
 from geometry_msgs.msg import PoseStamped, Pose
-from context_aware_nav_interfaces.srv import LocationLookup
+from context_aware_nav_interfaces.srv import LocationLookup, OwlLookup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.callback_groups import ReentrantCallbackGroup
 from nav2_msgs.action import NavigateToPose
 from rclpy.action import ActionClient
 import spacy
-
+from spacy.matcher import Matcher
 from context_aware_nav_interfaces.msg import ObjectLocalPose
 from tf2_ros import Buffer, TransformListener, TransformException
 from tf2_geometry_msgs import tf2_geometry_msgs
@@ -28,7 +28,12 @@ class NLPCommandProcessor(Node):
         self.location_lookup_client = self.create_client(LocationLookup,
                                                          '/semantic_map_server/nav_to_location',
                                                          callback_group=self.callback_group_client)
-        self.debug=True
+
+        self.owl_lookup_client = self.create_client(OwlLookup, '/owl_graph', callback_group=self.callback_group_client)
+
+
+        self.matcher = Matcher(self.nlp.vocab)
+        self.debug=False
 
         self.subscription = self.create_subscription(
             String, 'object_nav', self.command2_callback, 10)
@@ -60,6 +65,25 @@ class NLPCommandProcessor(Node):
     def nav_done_callback(self,future):
         self.get_logger().info("nav is done")
 
+    def infer_location(self, input):
+        request = OwlLookup.Request()
+        request.input.append(input)
+
+        future = self.owl_lookup_client.call_async(request)
+        future.add_done_callback(self.owl_lookup_done_callback)
+        
+
+    def owl_lookup_done_callback(self, future):
+        try:
+            response = future.result()
+            if response.output:
+                self.get_logger().info(f"Inferred location: {response.output}")
+                self.lookupLocation(response.output[0].lower())
+            else:
+                self.get_logger().info("No location inferred.")
+        except Exception as e:
+            self.get_logger().error(f"Service call failed: {e}")
+
     def command2_callback(self, msg):
         command_text = msg.data.lower()
         approach = self.navigate_to_object(command_text)
@@ -78,7 +102,25 @@ class NLPCommandProcessor(Node):
         command_text = msg.data.lower()
 
         # Process command
-        parsed_command = self.parse_command(command_text)
+        # parsed_command = self.parse_command(command_text)
+        level,res = self.analyze_command(command_text)
+
+        self.get_logger().info(f'Level: {level}, Result: {res}')
+        match level:
+            case 1:
+                self.lookupLocation(location)
+            case 2:
+                test = res.split(',')
+                location = test[1]
+                object = test[2]
+                self.lookupLocation(location)
+            case 3:
+                self.infer_location(res)
+            case 4:
+                self.infer_location(res)
+
+
+
 
     def object_nav_callback(self, msg):
         command_text = msg.data.lower()
@@ -120,6 +162,92 @@ class NLPCommandProcessor(Node):
             return "Parsed command: " + action + " to " + location
         return "Unable to parse command"
 
+    def extract_location(self,doc):
+        """Extracts a location using named entities (LOC, GPE) or 'to <location>'."""
+        for ent in doc.ents:
+            if ent.label_ in ["LOC", "GPE"]:
+                return ent.text
+        for token in doc:
+            if token.dep_ == "pobj" and token.head.lemma_ == "to":
+                return token.text
+        return None
+
+
+    def extract_action(self,doc):
+        """Returns the first verb lemma found."""
+        for token in doc:
+            if token.pos_ == "VERB":
+                return token.lemma_
+        return None
+
+
+    def extract_object(self,doc):
+        """Extracts the direct object of the command."""
+        for token in doc:
+            if token.dep_ == "dobj" and token.pos_ in ["NOUN", "PROPN"]:
+                return token.text
+        return None
+
+
+    def extract_need(self,doc):
+        """Checks for tokens indicating a human need via adjectives or nouns."""
+        for token in doc:
+            if token.pos_ in ["ADJ", "NOUN"] and token.lemma_ in [
+                "thirsty", "hungry", "tired", "cold", "bored", "dirty"
+            ]:
+                return token.lemma_
+        return None
+
+    # Parsers for each level
+
+    def parse_level1(self,text):
+        """Level 1: action + location."""
+        doc = self.nlp(text)
+        action = self.extract_action(doc)
+        loc = self.extract_location(doc)
+        return f"{action},{loc}" if action and loc else None
+
+
+    def parse_level2(self,text):
+        """Level 2: action + location + object."""
+        doc = self.nlp(text)
+        action = self.extract_action(doc)
+        loc = self.extract_location(doc)
+        obj = self.extract_object(doc)
+        return f"{action},{loc},{obj}" if action and loc and obj else None
+
+
+    def parse_level3(self,text):
+        """Level 3: object only."""
+        doc = self.nlp(text)
+        obj = self.extract_object(doc)
+        return obj if obj else None
+
+
+    def parse_level4(self,text):
+        """Level 4: human need, including want-to patterns."""
+        doc = self.nlp(text)
+        # Direct need from adjectives/nouns
+        need = self.extract_need(doc)
+        if need:
+            return f"{need}"
+        # Detect 'want/need to <action>' pattern and infer a tool need
+        for token in doc:
+            if token.lemma_ in ["want", "need"] and token.pos_ == "VERB":
+                for child in token.children:
+                    if child.dep_ == "xcomp" and child.pos_ == "VERB":
+                        return f"{child.lemma_}"
+        return None
+
+
+    def analyze_command(self,text):
+        """Runs level parsers in customized order: 2, 1, 3, 4."""
+        for level, fn in [(2, self.parse_level2), (1, self.parse_level1),
+                        (3, self.parse_level3), (4, self.parse_level4)]:
+            res = fn(text)
+            if res:
+                return level, res
+        return None, "Unable to parse command"
 
     def lookupLocation(self,locationString):
         

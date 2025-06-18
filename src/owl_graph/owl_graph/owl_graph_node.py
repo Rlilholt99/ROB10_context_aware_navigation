@@ -5,6 +5,7 @@ from context_aware_nav_interfaces.srv import OwlLookup
 import owlready2 as owl
 import os
 from ament_index_python.packages import get_package_share_directory
+from collections import defaultdict
 
 
 
@@ -17,32 +18,46 @@ class owl_graph_node(Node):
 
 
 
-    def owl_graph_lookup(self, entity_names: list, relation='located_in'):
+    def owl_graph_lookup(self,entity_names: list, relation: str = 'located_in') -> str:
         """
-        Infers a single location based on the object labels found in the input list.
+        Infers a single location based on the object or need labels found in the input list.
+        First, it attempts to match Objects in the ontology; if none are found,
+        it falls back to matching Needs (via objects that fulfill those needs).
         """
-        inferred_locations = {}
+        inferred_locations = defaultdict(int)
 
+        # First pass: try matching Objects directly
         for word in entity_names:
-            word = word.strip().lower()
+            normalized = word.strip().lower()
             for obj in self.owl_graph.Object.instances():
-                if obj.name.lower() == word:
-                    print(f"Matched object: {obj.name}")
-                    # Check the specified relation (e.g., 'located_in')
-                    for location in obj.located_in:
-                        if location.name in inferred_locations:
-                            inferred_locations[location.name] += 1
-                        else:
-                            inferred_locations[location.name] = 1
+                if obj.name.lower() == normalized:
+                    for loc in getattr(obj, relation, []):
+                        inferred_locations[loc.name] += 1
+
+        # Return top location if any object-based matches found
+        if inferred_locations:
+            return max(inferred_locations, key=inferred_locations.get)
+
+        # Fallback: try matching Needs via Objects that fulfill them
+        needs_matched = []
+        for word in entity_names:
+            normalized = word.strip().lower()
+            for need in self.owl_graph.Need.instances():
+                if need.name.lower() == normalized:
+                    needs_matched.append(need)
+
+        # Aggregate locations from objects fulfilling the matched needs
+        for need in needs_matched:
+            for obj in self.owl_graph.Object.instances():
+                if need in getattr(obj, 'fulfills', []):
+                    for loc in getattr(obj, relation, []):
+                        inferred_locations[loc.name] += 1
 
         if inferred_locations:
-            # Infer the most likely location based on the highest count
-            most_likely_location = max(inferred_locations, key=inferred_locations.get)
-            print(f"Inferred location: {most_likely_location}")
-            return most_likely_location
-        else:
-            print("No locations inferred.")
-            return "No locations inferred."
+            return max(inferred_locations, key=inferred_locations.get)
+
+        return "No locations inferred."
+
 
 
     def owl_graph_callback(self, request, response):

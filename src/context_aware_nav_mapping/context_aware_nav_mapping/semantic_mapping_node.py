@@ -159,8 +159,8 @@ class SemanticMapping(Node):
             poses.append([pose.position.x,pose.position.y])
             self.get_logger().info(f'pose: {pose.position.x} {pose.position.y}')
 
-        clusters = dbscan(poses,self.object_labels,eps=2,min_samples=1)
-        # clusters = dbscan_map_aware(poses,self.object_labels, map=self.map,eps=2,min_samples=1)
+        # clusters = dbscan(poses,self.object_labels,eps=2,min_samples=1)
+        clusters = dbscan_map_aware(poses,self.object_labels, map=self.map,eps=3,min_samples=1)
 
         return clusters
 
@@ -255,7 +255,7 @@ class SemanticMapping(Node):
                     marker.color.r = 0.0
                     marker.color.g = 1.0
                     marker.color.b = 0.0
-                case "living_room":
+                case "office":
                     marker.color.r = 1.0
                     marker.color.g = 1.0
                     marker.color.b = 0.0
